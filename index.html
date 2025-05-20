@@ -95,8 +95,8 @@
             window.pyodide = await loadPyodide();
             await window.pyodide.loadPackage(['micropip']);
             await window.pyodide.runPythonAsync(`
-                import micropip
-                await micropip.install(['requests', 'beautifulsoup4', 'pandas'])
+import micropip
+await micropip.install(['requests', 'beautifulsoup4', 'pandas'])
             `);
         }
 
@@ -117,48 +117,48 @@
                 const file = fileInput.files[0];
                 const text = await file.text();
                 const results = await window.pyodide.runPythonAsync(`
-                    import requests
-                    from bs4 import BeautifulSoup
-                    import pandas as pd
-                    import io
-                    import re
-                    import json
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+import io
+import re
+import json
 
-                    def get_living_area(property_id, owner_id):
-                        try:
-                            url = f"https://esearch.brazoscad.org/Property/View/{property_id}?year=2025&ownerId={owner_id}"
-                            headers = {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                            }
-                            response = requests.get(url, headers=headers, timeout=10)
-                            response.raise_for_status()
-                            soup = BeautifulSoup(response.text, 'html.parser')
-                            living_area_elem = soup.find(string=re.compile('Living Area:'))
-                            if living_area_elem:
-                                living_area = living_area_elem.find_next().text.strip()
-                                return living_area
-                            return 'Not found'
-                        except Exception as e:
-                            return f'Error: {str(e)}'
+def get_living_area(property_id, owner_id):
+try:
+    url = f"https://esearch.brazoscad.org/Property/View/{property_id}?year=2025&ownerId={owner_id}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    response = requests.get(url, headers=headers, timeout=10)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, 'html.parser')
+    living_area_elem = soup.find(string=re.compile('Living Area:'))
+    if living_area_elem:
+        living_area = living_area_elem.find_next().text.strip()
+        return living_area
+    return 'Not found'
+except Exception as e:
+    return f'Error: {str(e)}'
 
-                    # Read CSV
-                    try:
-                        df = pd.read_csv(io.StringIO('${text.replace(/'/g, "\\'")}'))
-                        if 'Property ID' not in df.columns or 'Owner ID' not in df.columns:
-                            return json.dumps({'error': 'CSV must contain "Property ID" and "Owner ID" columns'})
-                        
-                        # Process each row
-                        df['Living Area'] = df.apply(
-                            lambda row: get_living_area(row['Property ID'], row['Owner ID']), axis=1
-                        )
-                        
-                        # Convert to JSON for JavaScript
-                        return json.dumps({
-                            'data': df.to_dict(orient='records'),
-                            'columns': list(df.columns)
-                        })
-                    except Exception as e:
-                        return json.dumps({'error': f'Error processing CSV: {str(e)}'})
+# Read CSV
+try:
+df = pd.read_csv(io.StringIO('${text.replace(/'/g, "\\'")}'))
+if 'Property ID' not in df.columns or 'Owner ID' not in df.columns:
+    return json.dumps({'error': 'CSV must contain "Property ID" and "Owner ID" columns'})
+
+# Process each row
+df['Living Area'] = df.apply(
+    lambda row: get_living_area(row['Property ID'], row['Owner ID']), axis=1
+)
+
+# Convert to JSON for JavaScript
+return json.dumps({
+    'data': df.to_dict(orient='records'),
+    'columns': list(df.columns)
+})
+except Exception as e:
+return json.dumps({'error': f'Error processing CSV: {str(e)}'})
                 `);
 
                 const parsedResults = JSON.parse(results);
