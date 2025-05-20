@@ -1,0 +1,263 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brazos CAD Property Data Processor</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .error {
+            color: red;
+            margin-top: 10px;
+        }
+        .loading {
+            color: blue;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <h1 class="text-2xl font-bold mb-4">Brazos CAD Property Data Processor</h1>
+    <div class="mb-4">
+        <label for="csvFile" class="block text-sm font-medium text-gray-700">Upload CSV (with Property ID and Owner ID):</label>
+        <input type="file" id="csvFile" accept=".csv" class="mt-1 p-2 border rounded w-full max-w-md">
+        <button id="processButton" class="mt-2 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">Process CSV</button>
+    </div>
+    <div id="loading" class="loading hidden">Processing...</div>
+    <div id="error" class="error hidden"></div>
+    <table id="resultsTable" class="hidden">
+        <thead id="tableHeader"></thead>
+        <tbody id="resultsBody"></tbody>
+    </table>
+    <button id="downloadButton" class="mt-4 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 hidden">Download CSV</button>
+
+    <script>
+        async function loadPyodideAndPackages() {
+            window.pyodide = await loadPyodide();
+            await window.pyodide.loadPackage(['micropip']);
+            await window.pyodide.runPythonAsync(`
+                import micropip
+                await micropip.install(['requests', 'beautifulsoup4', 'pandas'])
+            `);
+        }
+
+        loadPyodideAndPackages();
+
+        document.getElementById('processButton').addEventListener('click', async () => {
+            const fileInput = document.getElementById('csvFile');
+            if (!fileInput.files.length) {
+                showError('Please upload a CSV file.');
+                return;
+            }
+
+            showLoading(true);
+            clearError();
+            clearTable();
+
+            try {
+                const file = fileInput.files[0];
+                const text = await file.text();
+                const results = await window.pyodide.runPythonAsync(`
+                    import requests
+                    from bs4 import BeautifulSoup
+                    import pandas as pd
+                    import io
+                    import re
+                    import json
+
+                    def get_living_area(property_id, owner_id):
+                        try:
+                            url = f"https://esearch.brazoscad.org/Property/View/{property_id}?year=2025&ownerId={owner_id}"
+                            headers = {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                            }
+                            response = requests.get(url, headers=headers, timeout=10)
+                            response.raise_for_status()
+                            soup = BeautifulSoup(response.text, 'html.parser')
+                            living_area_elem = soup.find(string=re.compile('Living Area:'))
+                            if living_area_elem:
+                                living_area = living_area_elem.find_next().text.strip()
+                                return living_area
+                            return 'Not found'
+                        except Exception as e:
+                            return f'Error: {str(e)}'
+
+                    # Read CSV
+                    try:
+                        df = pd.read_csv(io.StringIO('${text.replace(/'/g, "\\'")}'))
+                        if 'Property ID' not in df.columns or 'Owner ID' not in df.columns:
+                            return json.dumps({'error': 'CSV must contain "Property ID" and "Owner ID" columns'})
+                        
+                        # Process each row
+                        df['Living Area'] = df.apply(
+                            lambda row: get_living_area(row['Property ID'], row['Owner ID']), axis=1
+                        )
+                        
+                        # Convert to JSON for JavaScript
+                        return json.dumps({
+                            'data': df.to_dict(orient='records'),
+                            'columns': list(df.columns)
+                        })
+                    except Exception as e:
+                        return json.dumps({'error': f'Error processing CSV: {str(e)}'})
+                `);
+
+                const parsedResults = JSON.parse(results);
+                showLoading(false);
+
+                if (parsedResults.error) {
+                    showError(parsedResults.error);
+                    return;
+                }
+
+                if (parsedResults.data.length === 0) {
+                    showError('No data found in the CSV.');
+                    return;
+                }
+
+                populateTable(parsedResults.data, parsedResults.columns);
+                showDownloadButton(true);
+                window.processedData = parsedResults.data; // Store for CSV download
+            } catch (error) {
+                showLoading(false);
+                showError(`Error: ${error.message}`);
+            }
+        });
+
+        function populateTable(data, columns) {
+            const thead = document.getElementById('tableHeader');
+            const tbody = document.getElementById('resultsBody');
+            thead.innerHTML = '';
+            tbody.innerHTML = '';
+
+            // Create table header
+            const headerRow = document.createElement('tr');
+            columns.forEach(col => {
+                const th = document.createElement('th');
+                th.textContent = col;
+                headerRow.appendChild(th);
+            });
+            thead.appendChild(headerRow);
+
+            // Populate table body
+            data.forEach(row => {
+                const tr = document.createElement('tr');
+                columns.forEach(col => {
+                    const td = document.createElement('td');
+                    td.textContent = row[col] || '';
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+
+            document.getElementById('resultsTable').classList.remove('hidden');
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').classList.toggle('hidden', !show);
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.classList.remove('hidden');
+        }
+
+        function clearError() {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = '';
+            errorDiv.classList.add('hidden');
+        }
+
+        function clearTable() {
+            document.getElementById('resultsBody').innerHTML = '';
+            document.getElementById('tableHeader').innerHTML = '';
+            document.getElementById('resultsTable').classList.add('hidden');
+            showDownloadButton(false);
+        }
+
+        function showDownloadButton(show) {
+            document.getElementById('downloadButton').classList.toggle('hidden', !show);
+        }
+
+        document.getElementById('downloadButton').addEventListener('click', () => {
+            if (!window.processedData) return;
+
+            const columns = Object.keys(window.processedData[0]);
+            let csvContent = columns.join(',') + '\n';
+            window.processedData.forEach(row => {
+                const rowData = columns.map(col => `"${(row[col] || '').toString().replace(/"/g, '""')}"`);
+                csvContent += rowData.join(',') + '\n';
+            });
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.setAttribute('href', url);
+            link.setAttribute('download', 'brazos_cad_properties_updated.csv');
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+    </script>
+</body>
+</html>
